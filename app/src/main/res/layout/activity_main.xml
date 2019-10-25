@@ -8,12 +8,12 @@
 
     <TextureView
         android:id="@+id/view_finder"
-        android:layout_width="640px"
-        android:layout_height="640px"
-        app:layout_constraintTop_toTopOf="parent"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        app:layout_constraintTop_toTopOf="parent" />
 
     <ImageButton
         android:id="@+id/capture_button"
@@ -29,7 +29,10 @@
         android:id="@+id/accText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:shadowColor="#000000"
+        android:shadowRadius="10"
         android:text="TextView"
+        android:textColor="#80FFFFFF"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
@@ -38,7 +41,10 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
+        android:shadowColor="#000000"
+        android:shadowRadius="10"
         android:text="TextView"
+        android:textColor="#80FFFFFF"
         app:layout_constraintStart_toStartOf="@+id/accText"
         app:layout_constraintTop_toBottomOf="@+id/accText" />
 
@@ -47,7 +53,10 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
+        android:shadowColor="#000000"
+        android:shadowRadius="10"
         android:text="TextView"
+        android:textColor="#80FFFFFF"
         app:layout_constraintStart_toStartOf="@+id/gyroText"
         app:layout_constraintTop_toBottomOf="@+id/gyroText" />
 

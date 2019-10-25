@@ -6,9 +6,9 @@ import android.os.Bundle
 // Your IDE likely can auto-import these classes, but there are several
 // different implementations so we list them here to disambiguate.
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.util.Size
 import android.graphics.Matrix
@@ -17,25 +17,19 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
-import android.view.Surface
-import android.view.TextureView
-import android.view.ViewGroup
-import android.widget.ImageButton
+import android.view.*
 import android.widget.Toast
 import androidx.camera.core.*
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import androidx.core.os.EnvironmentCompat
 import kotlinx.android.synthetic.main.activity_main.*
 import java.io.File
 import java.io.IOException
-import java.lang.Exception
-import java.text.SimpleDateFormat
+import java.nio.ByteBuffer
 import java.util.*
 import java.util.concurrent.Executors
 
@@ -50,100 +44,82 @@ private const val NUM_OF_SENSORS = 3
 
 // This is an array of all the permission specified in the manifest.
 private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
-const val REQUEST_VIDEO_CAPTURE = 1
 
+@SuppressLint("RestrictedApi")
 class MainActivity : AppCompatActivity() {
-
-    private var mCameraUri: Uri? = null
-    private lateinit var mCameraVideoPath: String
 
 //    data class SensorData(var acc:FloatArray = FloatArray(3), var gyro:FloatArray = FloatArray(3), var mag:FloatArray = FloatArray(3))
 //    private var imu: SensorData = SensorData()
     private var ImuData = Array(NUM_OF_SENSORS) { FloatArray(NUM_OF_AXES) }
     private var sensorManager: SensorManager? = null
-    private var acc: Sensor? = null
-    private var gyro: Sensor? = null
-    private var mag: Sensor? = null
-    private var counts = 0
     private var recordFile: File? = null
-//    inner class mSensorListener : SensorEventListener {
-    private val showViewListener = object:SensorEventListener {
+    private var isRecording: Boolean = false
+    private var count = 0
+    companion object {
+        val STATE_COUNT = "COUNT"
+    }
+
+    private var acc: Sensor? = null
+    private val accListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent?) {
-            val timestamp = Date().time + (event!!.timestamp - System.nanoTime()) / 1000000L
-            when(event.sensor?.type) {
-                Sensor.TYPE_ACCELEROMETER -> {
-                    ImuData[0] = event.values
-                    accText.setText("${timestamp}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}")
+            event?.also {
+                ImuData[0] = event.values
+                accText.setText("Acc: ${Date().time}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}")
+                if(isRecording) {
+//                    recordFile?.appendText("Acc: ${Date().time}, ${event.values[0]}, ${event.values[1]}, ${event.values[2]}\n")
+                    recordFile?.appendBytes("A".toByteArray() + Date().time.toByteArray() + event.values[0].toByteArray() + event.values[1].toByteArray() + event.values[2].toByteArray())
                 }
-                Sensor.TYPE_GYROSCOPE -> {
-                    ImuData[1] = event.values
-                    gyroText.setText("${timestamp}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}")
-                }
-                Sensor.TYPE_MAGNETIC_FIELD -> {
-                    ImuData[2] = event.values
-                    magText.setText("${timestamp}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}")
-                }
-                else -> Toast.makeText(this@MainActivity, "Sensor ${event.sensor.type} not implemented", Toast.LENGTH_SHORT)
             }
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-//            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
         }
     }
-    private val saveStatListener = object:SensorEventListener {
+
+    private var gyro: Sensor? = null
+    private val gyroListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent?) {
-            val timestamp = Date().time + (event!!.timestamp - System.nanoTime()) / 1000000L
-            when(event.sensor?.type) {
-                Sensor.TYPE_ACCELEROMETER -> {
-                    ImuData[0] = event.values
-                    recordFile?.appendText("${event.sensor.name}:${timestamp}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}\n")
+            event?.also {
+                ImuData[1] = event.values
+                gyroText.setText("Gyro: ${Date().time}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}")
+                if(isRecording) {
+//                    recordFile?.appendText("Gyro: ${Date().time}, ${event.values[0]}, ${event.values[1]}, ${event.values[2]}\n")
+                    recordFile?.appendBytes("G".toByteArray() + Date().time.toByteArray() + event.values[0].toByteArray() + event.values[1].toByteArray() + event.values[2].toByteArray())
                 }
-                Sensor.TYPE_GYROSCOPE -> {
-                    ImuData[1] = event.values
-                    recordFile?.appendText("${event.sensor.name}:${timestamp}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}\n")
-                }
-                Sensor.TYPE_MAGNETIC_FIELD -> {
-                    ImuData[2] = event.values
-                    recordFile?.appendText("${event.sensor.name}:${timestamp}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}\n")
-                }
-                else -> Toast.makeText(this@MainActivity, "Sensor ${event.sensor.name} not implemented", Toast.LENGTH_SHORT)
             }
-//            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-//            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
         }
     }
-//    private var accListener = mSensorListener()
-//    private var gyroListener = mSensorListener()
-//    private var magListener = mSensorListener()
+
+    private var mag: Sensor? = null
+    private val magListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent?) {
+            event?.also {
+                ImuData[0] = event.values
+                magText.setText("Mag: ${Date().time}; ${event.values[0]}, ${event.values[1]}, ${event.values[2]}")
+                if(isRecording) {
+//                    recordFile?.appendText("Mag: ${Date().time}, ${event.values[0]}, ${event.values[1]}, ${event.values[2]}\n")
+                    recordFile?.appendBytes("M".toByteArray() + Date().time.toByteArray() + event.values[0].toByteArray() + event.values[1].toByteArray() + event.values[2].toByteArray())
+                }
+            }
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        loadPreference()
 
         setContentView(R.layout.activity_main)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
 //        val deviceSensors: List<Sensor> = sensorManager.getSensorList(Sensor.TYPE_ALL)
-        sensorManager?.apply {
-            acc = getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-            gyro =getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-            mag = getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
-        }
-
-//        val acc = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.also {
-//            sensorManager?.registerListener(showViewListener, it, SensorManager.SENSOR_DELAY_GAME)
-//        }
-//        val gyro = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.also {
-//            sensorManager?.registerListener(showViewListener, it, SensorManager.SENSOR_DELAY_GAME)
-//        }
-//        val mag = sensorManager?.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)?.also {
-//            sensorManager?.registerListener(showViewListener, it, SensorManager.SENSOR_DELAY_GAME)
-//        }
-//        sensorManager?.registerListener(showViewListener, acc, SensorManager.SENSOR_DELAY_GAME)
-//        sensorManager?.registerListener(showViewListener, gyro, SensorManager.SENSOR_DELAY_GAME)
-//        sensorManager?.registerListener(showViewListener, mag, SensorManager.SENSOR_DELAY_GAME)
+        acc = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        gyro = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        mag = sensorManager?.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
 
         // Add this at the end of onCreate function
 
@@ -162,119 +138,44 @@ class MainActivity : AppCompatActivity() {
             updateTransform()
         }
 
-        findViewById<ImageButton>(R.id.capture_button).setOnClickListener {
-            dispatchTakeVideoIntent()
-        }
+//        findViewById<ImageButton>(R.id.capture_button).setOnClickListener {
+//            dispatchTakeVideoIntent()
+//        }
     }
 
     override fun onResume() {
         super.onResume()
-//        sensorManager?.unregisterListener(saveStatListener)
-        Intent(this, SaveRecordService::class.java).also {
-            stopService(it)
-        }
+        isRecording = false
         acc?.also {
-            sensorManager?.registerListener(showViewListener, it, SensorManager.SENSOR_DELAY_GAME)
+            sensorManager?.registerListener(accListener, it, SensorManager.SENSOR_DELAY_GAME)
         }
         gyro?.also {
-            sensorManager?.registerListener(showViewListener, it, SensorManager.SENSOR_DELAY_GAME)
+            sensorManager?.registerListener(gyroListener, it, SensorManager.SENSOR_DELAY_GAME)
         }
         mag?.also {
-            sensorManager?.registerListener(showViewListener, it, SensorManager.SENSOR_DELAY_GAME)
+            sensorManager?.registerListener(magListener, it, SensorManager.SENSOR_DELAY_GAME)
         }
     }
 
     override fun onPause() {
         super.onPause()
-        sensorManager?.unregisterListener(showViewListener)
-        Intent(this, SaveRecordService::class.java).also {
-            startService(it)
-        }
-//        recordFile = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "${counts++}_${Date().time}.txt")
-//        acc?.also {
-//            sensorManager?.registerListener(saveStatListener, it, SensorManager.SENSOR_DELAY_GAME)
-//        }
-//        gyro?.also {
-//            sensorManager?.registerListener(saveStatListener, it, SensorManager.SENSOR_DELAY_GAME)
-//        }
-//        mag?.also {
-//            sensorManager?.registerListener(saveStatListener, it, SensorManager.SENSOR_DELAY_GAME)
-//        }
+        isRecording = false
+        sensorManager?.unregisterListener(accListener, acc)
+        sensorManager?.unregisterListener(gyroListener, gyro)
+        sensorManager?.unregisterListener(magListener, mag)
     }
 
     override fun onStop() {
         super.onStop()
-        sensorManager?.unregisterListener(showViewListener)
-//        sensorManager?.unregisterListener(saveStatListener)
+        isRecording = false
+        sensorManager?.unregisterListener(accListener, acc)
+        sensorManager?.unregisterListener(gyroListener, gyro)
+        sensorManager?.unregisterListener(magListener, mag)
+        savePreference()
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        Intent(this, SaveRecordService::class.java).also {
-            stopService(it)
-        }
-    }
-
-    private fun dispatchTakeVideoIntent() {
-        Intent(MediaStore.ACTION_VIDEO_CAPTURE).also { takeVideoIntent ->
-            takeVideoIntent.resolveActivity(packageManager)?.also {
-                var videoFile :File? = null
-                var videoUri :Uri? = null
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    // if Android Q
-                    videoUri = createVideoUri()
-                } else {
-                    try {
-                        videoFile = createVideoFile()
-                    } catch (e: IOException) {
-                        e.printStackTrace()
-                    }
-
-                    videoFile?.also {
-                        mCameraVideoPath = it.absolutePath
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                            // Android 7.0
-                            try {
-                                videoUri = FileProvider.getUriForFile(
-                                    this,
-                                    "${packageName}.fileprovider",
-                                    it
-                                )
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                                Toast.makeText(this, e.message, Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            videoUri = Uri.fromFile(it)
-                        }
-                    }
-                    mCameraUri = videoUri
-                    videoUri?.also {
-                        takeVideoIntent.putExtra(MediaStore.EXTRA_OUTPUT, videoUri)
-                        takeVideoIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                        startActivityForResult(takeVideoIntent, REQUEST_VIDEO_CAPTURE)
-                    }
-                }
-            }
-        }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, intent: Intent?) {
-        super.onActivityResult(requestCode,resultCode,intent)
-        if (requestCode == REQUEST_VIDEO_CAPTURE && resultCode == RESULT_OK) {
-//            if (Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-//                videoView.setVideoURI(mCameraUri)
-//            } else {
-//                videoView.setVideoPath(mCameraVideoPath)
-//            }
-//            videoView.setMediaController(MediaController(this))
-//            videoView.start()
-            Toast.makeText(this, "File saved to ${mCameraVideoPath}", Toast.LENGTH_LONG).show()
-        }
-        else {
-            Toast.makeText(this, "Cancelled", Toast.LENGTH_SHORT).show()
-        }
-    }
+    private fun savePreference() = getPreferences(Context.MODE_PRIVATE).edit().putInt(STATE_COUNT, count).commit()
+    private fun loadPreference() = getPreferences(Context.MODE_PRIVATE).getInt(STATE_COUNT, 0).also { count = it }
 
     // Add this after onCreate
 
@@ -285,7 +186,7 @@ class MainActivity : AppCompatActivity() {
 
         // Create configuration object for the viewfinder use case
         val previewConfig = PreviewConfig.Builder().apply {
-            setTargetResolution(Size(640, 480))
+            setTargetResolution(Size(1080, 1920))
         }.build()
 
 
@@ -306,61 +207,76 @@ class MainActivity : AppCompatActivity() {
 
         // Add this before CameraX.bindToLifecycle
 
+        val videoCaptureConfig = VideoCaptureConfig.Builder().apply {
+            setTargetRotation(viewFinder.display.rotation)
+        }.build()
+        val videoCapture = VideoCapture(videoCaptureConfig)
+
+        val tag = MainActivity::class.java.simpleName
+
 //        capture_button.setOnTouchListener { _, event ->
 //            if (event.action == MotionEvent.ACTION_DOWN) {
+//                recordFile = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "${Date().time}.txt")
+//                isRecording = true
 //                capture_button.setBackgroundColor(Color.GREEN)
+//                videoCapture.startRecording(createVideoFile()!!, executor, object: VideoCapture.OnVideoSavedListener {
+//                    override fun onVideoSaved(file: File) {
+//                        Log.i(tag, "Video File : $file")
+//                    }
+//
+//                    override fun onError(
+//                        videoCaptureError: VideoCapture.VideoCaptureError,
+//                        message: String,
+//                        cause: Throwable?
+//                    ) {
+//                        Log.i(tag, "Video Error: $message")
+//                    }
+//                })
 //
 //            } else if (event.action == MotionEvent.ACTION_UP) {
 //                capture_button.setBackgroundColor(Color.GRAY)
+//                isRecording = false
+//                videoCapture.stopRecording()
+//                Log.i(tag, "Video File stopped")
 //            }
 //            false
 //        }
 
-        // Create configuration object for the image capture use case
-//        val imageCaptureConfig = ImageCaptureConfig.Builder()
-//            .apply {
-                // We don't set a resolution for image capture; instead, we
-                // select a capture mode which will infer the appropriate
-                // resolution based on aspect ration and requested mode
-//                setCaptureMode(ImageCapture.CaptureMode.MIN_LATENCY)
-//            }.build()
+        capture_button.setOnClickListener {
+            if (isRecording) {
+//                capture_button.setBackgroundColor(Color.GRAY)
+                isRecording = false
+                videoCapture.stopRecording()
+                Toast.makeText(this, "File saved to ${recordFile?.absolutePath}", Toast.LENGTH_SHORT).show()
+                count++
+            } else {
+                recordFile = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "${count}_${Date().time}.dat")
+                isRecording = true
+//                capture_button.setBackgroundColor(Color.GREEN)
+                videoCapture.startRecording(createVideoFile()!!, executor, object: VideoCapture.OnVideoSavedListener {
+                    override fun onVideoSaved(file: File) {
+                        Log.i(tag, "Video File : $file")
+                    }
 
-        // Build the image capture use case and attach button click listener
-//        val imageCapture = ImageCapture(imageCaptureConfig)
-//        findViewById<ImageButton>(R.id.capture_button).setOnClickListener {
-//            val file = File(externalMediaDirs.first(),
-//                "${System.currentTimeMillis()}.jpg")
-//            capture_button.setBackgroundColor(Color.GREEN)
-//
-//            imageCapture.takePicture(file, executor,
-//                object : ImageCapture.OnImageSavedListener {
-//                    override fun onError(
-//                        imageCaptureError: ImageCapture.ImageCaptureError,
-//                        message: String,
-//                        exc: Throwable?
-//                    ) {
-//                        val msg = "Photo capture failed: $message"
-//                        Log.e("CameraXApp", msg, exc)
-//                        viewFinder.post {
-//                            Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
-//                        }
-//                    }
-//
-//                    override fun onImageSaved(file: File) {
-//                        val msg = "Photo capture succeeded: ${file.absolutePath}"
-//                        Log.d("CameraXApp", msg)
-//                        viewFinder.post {
-//                            Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
-//                        }
-//                    }
-//                })
-//        }
+                    override fun onError(
+                        videoCaptureError: VideoCapture.VideoCaptureError,
+                        message: String,
+                        cause: Throwable?
+                    ) {
+                        Log.i(tag, "Video Error: $message")
+                    }
+                })
+                Toast.makeText(this, "Start recording", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // Create configuration object for the image capture use case
 
         // Bind use cases to lifecycle
         // If Android Studio complains about "this" being not a LifecycleOwner
         // try rebuilding the project or updating the appcompat dependency to
         // version 1.1.0 or higher.
-        CameraX.bindToLifecycle(this, preview)//, imageCapture)
+        CameraX.bindToLifecycle(this, preview, videoCapture)//, imageCapture)
     }
 
     private fun updateTransform() {
@@ -433,10 +349,13 @@ class MainActivity : AppCompatActivity() {
 //        val videoName = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES)
         storageDir?.mkdir()
-        val tempFile = File(storageDir, "${Date().time}.mp4")
+        val tempFile = File(storageDir, "${count}_${Date().time}.mp4")
         if (!Environment.MEDIA_MOUNTED.equals(EnvironmentCompat.getStorageState(tempFile))) {
             return null
         }
         return tempFile
     }
 }
+
+fun Float.toByteArray(): ByteArray = ByteBuffer.allocate(4).putFloat(this).array()
+fun Long.toByteArray(): ByteArray = ByteBuffer.allocate(8).putLong(this).array()
