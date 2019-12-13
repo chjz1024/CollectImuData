@@ -1,8 +1,5 @@
 package com.example.collectimudata
 
-import androidx.appcompat.app.AppCompatActivity
-import android.os.Bundle
-
 // Your IDE likely can auto-import these classes, but there are several
 // different implementations so we list them here to disambiguate.
 import android.Manifest
@@ -10,26 +7,37 @@ import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
-import android.util.Size
 import android.graphics.Matrix
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.Image
 import android.net.Uri
+import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
-import android.view.*
+import android.util.Size
+import android.view.Surface
+import android.view.TextureView
+import android.view.ViewGroup
 import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.os.EnvironmentCompat
 import kotlinx.android.synthetic.main.activity_main.*
+import org.pytorch.IValue
+import org.pytorch.Module
+import org.pytorch.Tensor
+import org.pytorch.torchvision.TensorImageUtils
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.nio.FloatBuffer
 import java.util.*
 import java.util.concurrent.Executors
 
@@ -52,6 +60,13 @@ class MainActivity : AppCompatActivity() {
 //    private var imu: SensorData = SensorData()
     private var ImuData = Array(NUM_OF_SENSORS) { FloatArray(NUM_OF_AXES) }
     private var sensorManager: SensorManager? = null
+    private var mModule: Module? = null
+    private val MODULE_NAME = "mobilenet_quantized_scripted_925.pt"
+    private val INPUT_TENSOR_WIDTH = 224
+    private val INPUT_TENSOR_HEIGHT = 224
+    private val TOP_K = 3
+    private lateinit var mInputTensorBuffer: FloatBuffer
+    private lateinit var mInputTensor: Tensor
     private var recordFile: File? = null
     private var isRecording: Boolean = false
     private var count = 0
@@ -123,7 +138,7 @@ class MainActivity : AppCompatActivity() {
 
         // Add this at the end of onCreate function
 
-        viewFinder = findViewById(R.id.view_finder)
+        viewFinder = findViewById(R.id.view_finder) // optional
 
         // Request camera permissions
         if (allPermissionsGranted()) {
@@ -137,10 +152,14 @@ class MainActivity : AppCompatActivity() {
         viewFinder.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updateTransform()
         }
+        if (mModule == null) {
+            val moduleFileAbsoluteFilePath = File(
+                Utils.assetFilePath(this, MODULE_NAME)).absolutePath
+            mModule = Module.load(moduleFileAbsoluteFilePath)
 
-//        findViewById<ImageButton>(R.id.capture_button).setOnClickListener {
-//            dispatchTakeVideoIntent()
-//        }
+            mInputTensorBuffer = Tensor.allocateFloatBuffer(3 * INPUT_TENSOR_HEIGHT * INPUT_TENSOR_WIDTH)
+            mInputTensor = Tensor.fromBlob(mInputTensorBuffer, longArrayOf(1, 3, INPUT_TENSOR_HEIGHT.toLong(), INPUT_TENSOR_WIDTH.toLong()))
+        }
     }
 
     override fun onResume() {
@@ -172,6 +191,11 @@ class MainActivity : AppCompatActivity() {
         sensorManager?.unregisterListener(gyroListener, gyro)
         sensorManager?.unregisterListener(magListener, mag)
         savePreference()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        mModule?.destroy()
     }
 
     private fun savePreference() = getPreferences(Context.MODE_PRIVATE).edit().putInt(STATE_COUNT, count).commit()
@@ -212,39 +236,59 @@ class MainActivity : AppCompatActivity() {
         }.build()
         val videoCapture = VideoCapture(videoCaptureConfig)
 
-        val tag = MainActivity::class.java.simpleName
+        // image analysis
+        val imageAnalysisConfig = ImageAnalysisConfig.Builder().apply {
+            setTargetResolution(Size(INPUT_TENSOR_WIDTH, INPUT_TENSOR_HEIGHT))
+            setImageReaderMode(ImageAnalysis.ImageReaderMode.ACQUIRE_LATEST_IMAGE)
+        }.build()
+        val imageAnalysis = ImageAnalysis(imageAnalysisConfig)
+        imageAnalysis.setAnalyzer(executor,
+            object : ImageAnalysis.Analyzer {
+                override fun analyze(image: ImageProxy?, rotationDegrees: Int) {
+                    if(isRecording) return
+                    mModule?.also {
+                        val startTime = Date().time
+                        TensorImageUtils.imageYUV420CenterCropToFloatBuffer(
+                            image?.image, rotationDegrees,
+                            INPUT_TENSOR_WIDTH, INPUT_TENSOR_HEIGHT,
+                            TensorImageUtils.TORCHVISION_NORM_MEAN_RGB,
+                            TensorImageUtils.TORCHVISION_NORM_STD_RGB,
+                            mInputTensorBuffer, 0 // change will effect mInputTensor directly
+                        )
 
-//        capture_button.setOnTouchListener { _, event ->
-//            if (event.action == MotionEvent.ACTION_DOWN) {
-//                recordFile = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "${Date().time}.txt")
-//                isRecording = true
-//                capture_button.setBackgroundColor(Color.GREEN)
-//                videoCapture.startRecording(createVideoFile()!!, executor, object: VideoCapture.OnVideoSavedListener {
-//                    override fun onVideoSaved(file: File) {
-//                        Log.i(tag, "Video File : $file")
-//                    }
-//
-//                    override fun onError(
-//                        videoCaptureError: VideoCapture.VideoCaptureError,
-//                        message: String,
-//                        cause: Throwable?
-//                    ) {
-//                        Log.i(tag, "Video Error: $message")
-//                    }
-//                })
-//
-//            } else if (event.action == MotionEvent.ACTION_UP) {
-//                capture_button.setBackgroundColor(Color.GRAY)
-//                isRecording = false
-//                videoCapture.stopRecording()
-//                Log.i(tag, "Video File stopped")
-//            }
-//            false
-//        }
+                        val moduleForwardStartTime = Date().time
+                        val outputTensor = it.forward(IValue.from(mInputTensor)).toTensor()
+                        val moduleForwardDuration = Date().time - moduleForwardStartTime
+
+                        val scores = outputTensor.dataAsFloatArray
+                        val ixs = Utils.topK(scores, TOP_K)
+
+                        val topKClassNames =
+                            arrayOfNulls<String>(TOP_K)
+                        val topKScores =
+                            FloatArray(TOP_K)
+                        for (i in 0 until TOP_K) {
+                            val ix = ixs[i]
+                            topKClassNames[i] = Constants.IMAGENET_CLASSES[ix]
+                            topKScores[i] = scores[ix]
+                        }
+                        val analysisDuration = Date().time - startTime
+                        mainExecutor.execute {
+                            analysisResult(
+                                topKClassNames,
+                                topKScores,
+                                moduleForwardDuration,
+                                analysisDuration
+                            )
+                        }
+                    }
+                }
+            })
+
+        val tag = MainActivity::class.java.simpleName
 
         capture_button.setOnClickListener {
             if (isRecording) {
-//                capture_button.setBackgroundColor(Color.GRAY)
                 isRecording = false
                 videoCapture.stopRecording()
                 Toast.makeText(this, "File saved to ${recordFile?.absolutePath}", Toast.LENGTH_SHORT).show()
@@ -252,7 +296,6 @@ class MainActivity : AppCompatActivity() {
             } else {
                 recordFile = File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "${count}_${Date().time}.dat")
                 isRecording = true
-//                capture_button.setBackgroundColor(Color.GREEN)
                 videoCapture.startRecording(createVideoFile()!!, executor, object: VideoCapture.OnVideoSavedListener {
                     override fun onVideoSaved(file: File) {
                         Log.i(tag, "Video File : $file")
@@ -276,7 +319,8 @@ class MainActivity : AppCompatActivity() {
         // If Android Studio complains about "this" being not a LifecycleOwner
         // try rebuilding the project or updating the appcompat dependency to
         // version 1.1.0 or higher.
-        CameraX.bindToLifecycle(this, preview, videoCapture)//, imageCapture)
+//        CameraX.bindToLifecycle(this, preview, imageAnalysis, videoCapture)//, imageCapture)
+        CameraX.bindToLifecycle(this, preview, imageAnalysis)//, imageCapture)
     }
 
     private fun updateTransform() {
@@ -300,6 +344,16 @@ class MainActivity : AppCompatActivity() {
         viewFinder.setTransform(matrix)
     }
 
+    private fun analysisResult(topKClassNames :Array<String?>, topKScroes :FloatArray, moduleForwardDuration :Long, analysisDuration :Long) {
+//        Toast.makeText(this, "Image classfied as ${topKClassNames[0]} with score ${topKScroes[0]}", Toast.LENGTH_SHORT).show()
+        cTop1.text = topKClassNames[0]
+        sTop1.text = topKScroes[0].toString()
+        cTop2.text = topKClassNames[1]
+        sTop2.text = topKScroes[1].toString()
+        cTop3.text = topKClassNames[2]
+        sTop3.text = topKScroes[2].toString()
+        bDuration.text = "${analysisDuration}ms"
+    }
     /**
      * Process result from permission request dialog box, has the request
      * been granted? If yes, start Camera. Otherwise display a toast
